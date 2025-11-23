@@ -5,6 +5,8 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
+#include <Fonts/FreeSansBold24pt7b.h>
+#include <Fonts/FreeSans9pt7b.h>
 
 // === CONFIGURATION ===
 // ST7789 screen pins
@@ -13,13 +15,13 @@
 #define TFT_CS   15
 #define TFT_DC    2
 #define TFT_RST   4
-#define TFT_BLK   5   // backlight control pin (PWM)
+#define TFT_BLK   5
 
 // Wi-Fi + NTP
-const char* WIFI_SSID = "XXXXX";
-const char* WIFI_PASSWORD = "XXXX";
+const char* WIFI_SSID = "goaway";
+const char* WIFI_PASSWORD = "mdp$Ax01SUPadv@";
 const char* NTP_SERVER = "pool.ntp.org";
-const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3"; // Europe/Paris with DST
+const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 // Day/Night parameters
 const int DAY_START_H = 8;    
@@ -29,16 +31,18 @@ const int DAY_END_M = 30;
 
 // Display options
 const bool SHOW_DAY_INSTEAD_OF_DATE = true;
+const bool IS_24H_FORMAT = false;
 
 // Custom colors (RGB565)
-#define COLOR_SKY_DAY    0x5D9F  // Light blue
-#define COLOR_SKY_NIGHT  0x1884  // Dark blue
-#define COLOR_SUN        0xFE60  // Orange-yellow
-#define COLOR_MOON       0xFFFF  // White
-#define COLOR_TIME       0xFFE0  // Light yellow
-#define COLOR_STARS      0xFFFF  // White
-#define COLOR_SCHOOL     0xFDA0  // Orange
-#define COLOR_OFFDAY     0x87F0  // Light green
+#define COLOR_SKY_DAY    0x5D9F
+#define COLOR_SKY_NIGHT  0x1884
+#define COLOR_SUN        0xFE60
+#define COLOR_MOON       0xFFFF
+#define COLOR_TIME       0xFFE0
+#define COLOR_STARS      0xFFFF
+#define COLOR_SCHOOL     0xFDA0
+#define COLOR_OFFDAY     0x87F0
+#define COLOR_SHADOW     0x18C3
 
 // === GLOBAL OBJECTS ===
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
@@ -47,13 +51,18 @@ RTC_DS3231 rtc;
 // State variables
 int lastHour = -1;
 int lastMinute = -1;
+int lastDay = -1;
 int lastWasNight = -1;
 unsigned long lastNTPSync = 0;
-const unsigned long NTP_SYNC_INTERVAL = 7UL * 24 * 60 * 60 * 1000; // 7 days
+const unsigned long NTP_SYNC_INTERVAL = 7UL * 24 * 60 * 60 * 1000;
+
+// Zone de l'heure pour optimisation
+struct TimeDisplayArea {
+  int16_t x, y, w, h;
+} timeArea = {0, 0, 0, 0};
 
 // === GRAPHIC FUNCTIONS ===
 
-// ☀️ Sun
 void drawSun(int x, int y, int r) {
   tft.fillCircle(x, y, r, COLOR_SUN);
   for (int i = 0; i < 12; i++) {
@@ -66,7 +75,6 @@ void drawSun(int x, int y, int r) {
   }
 }
 
-// 🌙 Moon
 void drawMoon(int x, int y, int radius) {
   tft.fillCircle(x, y, radius, COLOR_MOON);
   tft.fillCircle(x + 12, y - 8, radius, COLOR_SKY_NIGHT);
@@ -75,7 +83,6 @@ void drawMoon(int x, int y, int radius) {
   tft.fillCircle(x - 2, y + 10, 2, 0xCE59);
 }
 
-// ⭐ Stars
 void drawStars() {
   int stars[][2] = {
     {20, 30}, {80, 50}, {150, 25}, {200, 60},
@@ -88,31 +95,72 @@ void drawStars() {
   }
 }
 
-// 🕒 Time centered
-void displayTime(int hour, int minute) {
+// 🕒 Time display optimisé
+void displayTime(int hour, int minute, bool forceRedraw = false) {
+  static char lastBuffer[6] = "";
   char buffer[6];
-  sprintf(buffer, "%02d:%02d", hour, minute);
-  tft.setTextSize(6);
+  
+  if (IS_24H_FORMAT) {
+    sprintf(buffer, "%02d:%02d", hour, minute);
+  } else {
+    int displayHour = hour % 12;
+    if (displayHour == 0) displayHour = 12;
+    sprintf(buffer, "%02d:%02d", displayHour, minute);
+  }
+
+  if (strcmp(buffer, lastBuffer) == 0 && !forceRedraw) {
+    return;
+  }
+  strcpy(lastBuffer, buffer);
+
+  bool isNight = lastWasNight == 1;
+  uint16_t bgColor = isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY;
+
+  tft.setFont(&FreeSansBold24pt7b);
 
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
-  int xPos = (240 - w) / 2;
-  int yPos = 100;
+  
+  // Position centrale avec baseline correcte
+  int xPos = (240 - w) / 2 - x1;
+  int yPos = 130;  // Baseline position
 
-  // Shadow
-  tft.setTextColor(0x18C3);
-  tft.setCursor(xPos + 3, yPos + 3);
+  // Effacer l'ancienne zone si nécessaire
+  if (timeArea.w > 0 || forceRedraw) {
+    // Calcul de la zone totale incluant l'ombre
+    int clearX = min(xPos + x1 - 5, xPos + x1 + 2);
+    int clearY = yPos + y1 - 5;
+    int clearW = w + 15;
+    int clearH = h + 15;
+    
+    tft.fillRect(clearX, clearY, clearW, clearH, bgColor);
+  }
+
+  // Dessiner l'ombre (décalage de 2px au lieu de 3 pour plus de finesse)
+  tft.setTextColor(COLOR_SHADOW);
+  tft.setCursor(xPos + 2, yPos + 2);
   tft.print(buffer);
 
-  // Main text
+  // Dessiner le texte principal
   tft.setTextColor(COLOR_TIME);
   tft.setCursor(xPos, yPos);
   tft.print(buffer);
+
+  // Sauvegarder la zone pour la prochaine fois
+  timeArea.x = xPos + x1 - 5;
+  timeArea.y = yPos + y1 - 5;
+  timeArea.w = w + 15;
+  timeArea.h = h + 15;
+  
+  tft.setFont();
 }
 
-// 📅 Day or date display
-void displayDayOrDate(int dayOfWeek, int day, int month, int year) {
+// 📅 Day or date display optimisé
+void displayDayOrDate(int dayOfWeek, int day, int month, int year, bool forceRedraw = false) {
+  static char lastBuffer[20] = "";
+  static int16_t lastX = 0, lastY = 0, lastW = 0, lastH = 0;
+  
   const char* days[] = {"Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"};
   const char* months[] = {"", "Jan", "Fev", "Mars", "Avril", "Mai", "Juin",
                           "Jui", "Aout", "Sep", "Oct", "Nov", "Dec"};
@@ -122,24 +170,48 @@ void displayDayOrDate(int dayOfWeek, int day, int month, int year) {
 
   if (SHOW_DAY_INSTEAD_OF_DATE) {
     sprintf(buffer, "%s", days[dayOfWeek]);
-    // School days = Monday, Tuesday, Thursday, Friday
-    bool isNoSchoolDay = (dayOfWeek == 0 || dayOfWeek == 3 || dayOfWeek == 6); // Sun, Wed, Sat
+    bool isNoSchoolDay = (dayOfWeek == 0 || dayOfWeek == 3 || dayOfWeek == 6);
     color = isNoSchoolDay ? COLOR_OFFDAY : COLOR_SCHOOL;
   } else {
     sprintf(buffer, "%d %s %d", day, months[month], year);
     color = 0xAD55;
   }
 
-  tft.setTextSize(2);
-  tft.setTextColor(color);
+  if (strcmp(buffer, lastBuffer) == 0 && !forceRedraw) {
+    return;
+  }
+  strcpy(lastBuffer, buffer);
+
+  bool isNight = lastWasNight == 1;
+  uint16_t bgColor = isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY;
+
+  tft.setFont(&FreeSans9pt7b);
 
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(buffer, 0, 0, &x1, &y1, &w, &h);
-  int xPos = (240 - w) / 2;
+  
+  int16_t xPos = (240 - w) / 2 - x1;
+  int16_t yPos = 190;
 
-  tft.setCursor(xPos, 160);
+  // Effacer l'ancienne zone si elle existait
+  if (lastW > 0 || forceRedraw) {
+    uint16_t clearW = (lastW > w ? lastW : w) + 10;
+    int16_t clearX = (lastX < xPos + x1 ? lastX : xPos + x1) - 5;
+    tft.fillRect(clearX, yPos + y1 - 5, clearW, h + 10, bgColor);
+  }
+
+  tft.setTextColor(color);
+  tft.setCursor(xPos, yPos);
   tft.print(buffer);
+
+  // Sauvegarder pour la prochaine fois
+  lastX = xPos + x1;
+  lastY = yPos + y1;
+  lastW = w;
+  lastH = h;
+  
+  tft.setFont();
 }
 
 // === NTP SYNC ===
@@ -234,50 +306,65 @@ void setup() {
   Serial.println("✅ Initialization complete\n");
 }
 
-// === LOOP ===
 void loop() {
   DateTime now = rtc.now();
   int hour = now.hour();
   int minute = now.minute();
+  int day = now.day();
 
-  // Weekly NTP resync (at 3 AM)
+  // Weekly NTP resync
   if (hour == 3 && minute == 0 && (millis() - lastNTPSync > NTP_SYNC_INTERVAL)) {
     if (syncTimeWithNTP()) {
       lastNTPSync = millis();
       lastHour = -1;
       lastMinute = -1;
+      lastDay = -1;
+      lastWasNight = -1;
+      timeArea = {0, 0, 0, 0};
     }
   }
 
-  if (hour != lastHour || minute != lastMinute) {
+  // Détection du changement jour/nuit
+  bool isNight = (hour < DAY_START_H) ||
+                 (hour > DAY_END_H) ||
+                 (hour == DAY_START_H && minute < DAY_START_M) ||
+                 (hour == DAY_END_H && minute >= DAY_END_M);
+
+  bool needsFullRedraw = false;
+
+  // Transition jour/nuit complète
+  if (isNight != lastWasNight) {
+    lastWasNight = isNight;
+    needsFullRedraw = true;
+    
+    tft.fillScreen(isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY);
+    
+    if (isNight) {
+      drawStars();
+      drawMoon(120, 250, 30);
+      ledcWrite(0, 1);
+    } else {
+      drawSun(120, 250, 28);
+      ledcWrite(0, 250);
+    }
+    
+    // Reset time area pour forcer le redessinage
+    timeArea = {0, 0, 0, 0};
+  }
+
+  // Mise à jour de l'heure
+  if (hour != lastHour || minute != lastMinute || needsFullRedraw) {
     lastHour = hour;
     lastMinute = minute;
-
-    bool isNight = (hour < DAY_START_H) ||
-                   (hour > DAY_END_H) ||
-                   (hour == DAY_START_H && minute < DAY_START_M) ||
-                   (hour == DAY_END_H && minute >= DAY_END_M);
-
-    if (isNight != lastWasNight) {
-      lastWasNight = isNight;
-      tft.fillScreen(isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY);
-      if (isNight) {
-        drawStars();
-        ledcWrite(0, 1);
-      } else {
-        ledcWrite(0, 250);
-      }
-    } else {
-      tft.fillRect(0, 80, 240, 80, isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY);
-      tft.fillRect(0, 200, 240, 100, isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY);
-    }
-
-    displayTime(hour, minute);
-    displayDayOrDate(now.dayOfTheWeek(), now.day(), now.month(), now.year());
-    if (isNight) drawMoon(120, 250, 30);
-    else drawSun(120, 250, 28);
-
+    displayTime(hour, minute, needsFullRedraw);
+    
     Serial.printf("🕐 %02d:%02d | %s\n", hour, minute, isNight ? "🌙 Night" : "☀️ Day");
+  }
+
+  // Mise à jour de la date
+  if (day != lastDay || needsFullRedraw) {
+    lastDay = day;
+    displayDayOrDate(now.dayOfTheWeek(), now.day(), now.month(), now.year(), needsFullRedraw);
   }
 
   delay(1000);
