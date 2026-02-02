@@ -7,6 +7,8 @@
 #include <SPI.h>
 #include <Fonts/FreeSansBold24pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
+#include <Fonts/FreeMono9pt7b.h>
+
 
 // === CONFIGURATION ===
 // ST7789 screen pins
@@ -24,13 +26,13 @@ const char* NTP_SERVER = "pool.ntp.org";
 const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";
 
 // Day/Night parameters
-const int DAY_START_H = 8;    
+const int DAY_START_H = 9;    
 const int DAY_START_M = 00;    
-const int DAY_END_H = 20;      
-const int DAY_END_M = 30;
+const int DAY_END_H = 19;      
+const int DAY_END_M = 45;
 
 // Display options
-const bool SHOW_DAY_INSTEAD_OF_DATE = true;
+const bool SHOW_DAY_INSTEAD_OF_DATE = false;
 const bool IS_24H_FORMAT = false;
 
 // Custom colors (RGB565)
@@ -164,17 +166,18 @@ void displayDayOrDate(int dayOfWeek, int day, int month, int year, bool forceRed
   const char* days[] = {"Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"};
   const char* months[] = {"", "Jan", "Fev", "Mars", "Avril", "Mai", "Juin",
                           "Jui", "Aout", "Sep", "Oct", "Nov", "Dec"};
+  const char* daysShort[] = {"Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"};
 
   char buffer[20];
   uint16_t color;
+  bool isNoSchoolDay = (dayOfWeek == 0 || dayOfWeek == 3 || dayOfWeek == 6);
 
   if (SHOW_DAY_INSTEAD_OF_DATE) {
     sprintf(buffer, "%s", days[dayOfWeek]);
-    bool isNoSchoolDay = (dayOfWeek == 0 || dayOfWeek == 3 || dayOfWeek == 6);
     color = isNoSchoolDay ? COLOR_OFFDAY : COLOR_SCHOOL;
   } else {
-    sprintf(buffer, "%d %s %d", day, months[month], year);
-    color = 0xAD55;
+    sprintf(buffer, "%s %d %s", daysShort[dayOfWeek], day, months[month]);
+    color = isNoSchoolDay ? COLOR_OFFDAY : COLOR_SCHOOL;
   }
 
   if (strcmp(buffer, lastBuffer) == 0 && !forceRedraw) {
@@ -185,7 +188,7 @@ void displayDayOrDate(int dayOfWeek, int day, int month, int year, bool forceRed
   bool isNight = lastWasNight == 1;
   uint16_t bgColor = isNight ? COLOR_SKY_NIGHT : COLOR_SKY_DAY;
 
-  tft.setFont(&FreeSans9pt7b);
+  tft.setFont(&FreeMono9pt7b);
 
   int16_t x1, y1;
   uint16_t w, h;
@@ -328,7 +331,8 @@ void loop() {
   bool isNight = (hour < DAY_START_H) ||
                  (hour > DAY_END_H) ||
                  (hour == DAY_START_H && minute < DAY_START_M) ||
-                 (hour == DAY_END_H && minute >= DAY_END_M);
+                 (hour == DAY_END_H && minute >= DAY_END_M) ||
+                  (hour > 12) && ((hour < 16) || (hour == 16 && minute < 30));
 
   bool needsFullRedraw = false;
 
